@@ -71,7 +71,33 @@ public class UdemyDownload {
     private static final String FILE_NAME_FORMAT = DOWNLOADS_DIRECTORY + "/original.pdf";
     private static final String FILE_NAME_REG_EX = "original \\(\\d+\\).pdf"; // Used by deleteFiles()
     private static final String RESOURCES_DIRECTORY = DOWNLOADS_DIRECTORY + "/Resources";
+    private static final int RESOURCE_DOWNLOAD_TIMEOUT_IN_SECONDS = 300;
     private static boolean isFileDownloadEnabled = true;
+
+    private static final String DOCUMENT_READY_JS_CODE = "return document.readyState;";
+    private static final String LINK_RESOURCE_URL_VAR_NAME = "window.redirectionUrl";
+    private static final String PREPARE_BROWSER_FOR_URL_EXTRACTION_JS_CODE =
+            "window.windowOpen = window.open;" +  //backup original function
+            "window.isRedirectionEnabled = false;" + 
+            LINK_RESOURCE_URL_VAR_NAME + " = null;" + 
+            "window.open = function() {" + 
+            "    " + LINK_RESOURCE_URL_VAR_NAME + " = arguments[0];" + 
+            "    if(window.isRedirectionEnabled) {" + 
+            "        windowOpen.apply(this, arguments);" + 
+            "    }" + 
+            "};"  +
+            "return 'complete';";//hack just to make DOCUMENT_READY_JS_CODE easy and compliant with runJsTillCompletion()
+    private static final String GET_LINK_RESOURCE_URL_JS_CODE =
+            "(function(seleniumCallback){" + 
+            "    let intervalId = setInterval(function(){" + 
+            "        if(" + LINK_RESOURCE_URL_VAR_NAME + ") {" + 
+            "            clearInterval(intervalId);" + 
+            "            let temp = " + LINK_RESOURCE_URL_VAR_NAME + ";" + 
+            "            " + LINK_RESOURCE_URL_VAR_NAME + " = null;" + 
+            "            seleniumCallback(temp);" + 
+            "        }" + 
+            "    },0);" + 
+            "}(arguments[0]));";
 
     private static AtomicInteger downloadsCounter = new AtomicInteger(0);
     private static Instant executionStartTime = Instant.now();
@@ -102,10 +128,11 @@ public class UdemyDownload {
 //             driver.manage().window().setPosition(new Point(2000, 10));
             driver.manage().window().maximize();
             driver.get(starterUrl);
+            runJsTillCompletion(DOCUMENT_READY_JS_CODE);
+            runJsTillCompletion(PREPARE_BROWSER_FOR_URL_EXTRACTION_JS_CODE);
+
             List<WebElement> sectionDivs = driver.findElements(By.xpath(SECTIONS_XPATH));
             int sectionCount = sectionDivs.size();
-            wait.until(webDriver -> ((JavascriptExecutor) driver).executeScript("return document.readyState").toString()
-                    .equals("complete"));
             //Course structure: Section -> Items -> Resources
             CourseStructure courseStructure = new CourseStructure(sectionCount);
             for (int i = 0; i < sectionCount; i++) {
@@ -166,14 +193,15 @@ public class UdemyDownload {
 
                             } else {
                                 if (resourceType.isDownloadable()) {
+                                    resourceButton.click(); // hide the resources menu
                                     courseStructure.getCourseSection(i).getCourseItem(j).addCourseResource(
                                             resourceType, resourceName, cleanFileName(resourceName), "File Downloads Disabled");
                                 } else {
+                                    resourceSpan.click(); //puts the link url into a global variable. See PREPARE_BROWSER_FOR_URL_EXTRACTION_JS_CODE
+                                    String linkUrl = (String) js.executeAsyncScript(GET_LINK_RESOURCE_URL_JS_CODE);
                                     courseStructure.getCourseSection(i).getCourseItem(j).addCourseResource(
-                                            resourceType, resourceName, resourceName, getLink(resourceName));
-
+                                            resourceType, resourceName, resourceName, linkUrl, linkUrl);
                                 }
-                                resourceButton.click(); // hide the resources menu
                             }
                             resourceButton.click(); // display the resources menu hidden by resourcesSpan.click()
                         }
@@ -196,7 +224,15 @@ public class UdemyDownload {
 //			driver.quit();
             System.out.println("Script Execution Finalized!");
         }
-
+    }
+    
+    /**
+     * The script inside this method avoids redirection and gets the
+     * intended destination url. The intention is to get the url of
+     * link resources without navigating to the link's destination url.
+     */
+    private static void runJsTillCompletion(String jsCode) {
+        wait.until(webDriver -> js.executeScript(jsCode).toString().equals("complete"));
     }
 
     private static String organizeResource(CourseResource courseResource) throws IOException {
@@ -265,7 +301,7 @@ public class UdemyDownload {
          */
 
         latestFile = null;
-        wait.pollingEvery(Duration.ofSeconds(1)).withTimeout(Duration.ofSeconds(30)).until(x -> {
+        wait.pollingEvery(Duration.ofSeconds(1)).withTimeout(Duration.ofSeconds(RESOURCE_DOWNLOAD_TIMEOUT_IN_SECONDS)).until(x -> {
             latestFile = getLatestFile(DOWNLOADS_DIRECTORY);
             return wasFileDownloadedDuringExecution(latestFile);
         });
