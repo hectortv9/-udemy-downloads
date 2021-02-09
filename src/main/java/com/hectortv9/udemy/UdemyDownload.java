@@ -8,28 +8,22 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
 
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
 import javax.swing.JOptionPane;
 
 import org.apache.commons.io.FileUtils;
 import org.openqa.selenium.By;
 import org.openqa.selenium.JavascriptExecutor;
 import org.openqa.selenium.WebDriver;
-import org.openqa.selenium.WebDriverException;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
-import org.openqa.selenium.support.ui.ExpectedCondition;
 import org.openqa.selenium.support.ui.WebDriverWait;
 
 import com.hectortv9.udemy.CourseResource.ResourceType;
@@ -66,6 +60,8 @@ public class UdemyDownload {
     private static final String RESOURCE_BUTTON_XPATH = ".//button[@aria-label='Resource list']";
     private static final String RESOURCE_ICONS_XPATH = ".//following-sibling::ul[@role='menu']/li/a/span[1]";
     private static final String RESOURCE_NAMES_XPATH = ".//following-sibling::ul[@role='menu']/li/a/span[2]";
+    private static final String IS_EXPANDED_HTML_ATTRIBUTE = "aria-expanded";
+    private static final String LABEL_HTML_ATTRIBUTE = "aria-label";
     private static final String DOWNLOADS_DIRECTORY = profileDirectory + "/Downloads"; // Used by deleteFiles()
 //	private static final String FILE_NAME_FORMAT = DOWNLOADS_DIRECTORY + "/original (%d).pdf"; //NOT USED ANYMORE DUE TO NON-INCREMENTAL FILENAME APPROACH
     private static final String FILE_NAME_FORMAT = DOWNLOADS_DIRECTORY + "/original.pdf";
@@ -74,6 +70,7 @@ public class UdemyDownload {
     private static final int RESOURCE_DOWNLOAD_TIMEOUT_IN_SECONDS = 300;
     private static boolean isFileDownloadEnabled = true;
 
+    private static final String SCROLL_INTO_VIEW_JS_CODE = "arguments[0].scrollIntoView(true);";
     private static final String DOCUMENT_READY_JS_CODE = "return document.readyState;";
     private static final String LINK_RESOURCE_URL_VAR_NAME = "window.redirectionUrl";
     private static final String PREPARE_BROWSER_FOR_URL_EXTRACTION_JS_CODE =
@@ -85,8 +82,7 @@ public class UdemyDownload {
             "    if(window.isRedirectionEnabled) {" + 
             "        windowOpen.apply(this, arguments);" + 
             "    }" + 
-            "};"  +
-            "return 'complete';";//hack just to make DOCUMENT_READY_JS_CODE easy and compliant with runJsTillCompletion()
+            "};";
     private static final String GET_LINK_RESOURCE_URL_JS_CODE =
             "(function(seleniumCallback){" + 
             "    let intervalId = setInterval(function(){" + 
@@ -128,8 +124,8 @@ public class UdemyDownload {
 //             driver.manage().window().setPosition(new Point(2000, 10));
             driver.manage().window().maximize();
             driver.get(starterUrl);
-            runJsTillCompletion(DOCUMENT_READY_JS_CODE);
-            runJsTillCompletion(PREPARE_BROWSER_FOR_URL_EXTRACTION_JS_CODE);
+            wait.until(webDriver -> js.executeScript(DOCUMENT_READY_JS_CODE).toString().equals("complete"));
+            js.executeScript(PREPARE_BROWSER_FOR_URL_EXTRACTION_JS_CODE);
 
             List<WebElement> sectionDivs = driver.findElements(By.xpath(SECTIONS_XPATH));
             int sectionCount = sectionDivs.size();
@@ -147,7 +143,7 @@ public class UdemyDownload {
                 String sectionName = sb.toString().trim();
 
                 //Expand section to display list of course items
-                boolean isExpanded = Boolean.parseBoolean(sectionDiv.getAttribute("aria-expanded"));
+                boolean isExpanded = Boolean.parseBoolean(sectionDiv.getAttribute(IS_EXPANDED_HTML_ATTRIBUTE));
                 if (!isExpanded) {
                     sectionLabelDiv.click();
                 }
@@ -159,13 +155,14 @@ public class UdemyDownload {
 
                 for (int j = 0; j < curriculumItemCount; j++) {
                     WebElement curriculumItemDiv = curriculumItemDivs.get(j);
-                    String curriculumItemName = curriculumItemDiv.getAttribute("aria-label").trim();
+                    String curriculumItemName = curriculumItemDiv.getAttribute(LABEL_HTML_ATTRIBUTE).trim();
 
                     List<WebElement> resourceButtons = curriculumItemDiv.findElements(By.xpath(RESOURCE_BUTTON_XPATH));
                     if (resourceButtons.size() != 0) {
                         WebElement resourceButton = resourceButtons.get(0);
-                        wait.until(ExpectedConditionsPlus.javaScriptThrowsNoExceptions(
-                                "arguments[0].scrollIntoView(true);", resourceButtons.get(0)));
+//                        wait.until(ExpectedConditionsPlus.javaScriptThrowsNoExceptions(
+//                                SCROLL_INTO_VIEW_JS_CODE, resourceButtons.get(0)));
+                        js.executeScript(SCROLL_INTO_VIEW_JS_CODE, resourceButtons.get(0));
 
                         resourceButton.click(); // display the resources menu
                         //Assumption is there's always an icon associated to one span
@@ -197,7 +194,7 @@ public class UdemyDownload {
                                     courseStructure.getCourseSection(i).getCourseItem(j).addCourseResource(
                                             resourceType, resourceName, cleanFileName(resourceName), "File Downloads Disabled");
                                 } else {
-                                    resourceSpan.click(); //puts the link url into a global variable. See PREPARE_BROWSER_FOR_URL_EXTRACTION_JS_CODE
+                                    resourceSpan.click(); //puts the link url into browser's global variable. See PREPARE_BROWSER_FOR_URL_EXTRACTION_JS_CODE
                                     String linkUrl = (String) js.executeAsyncScript(GET_LINK_RESOURCE_URL_JS_CODE);
                                     courseStructure.getCourseSection(i).getCourseItem(j).addCourseResource(
                                             resourceType, resourceName, resourceName, linkUrl, linkUrl);
@@ -224,15 +221,6 @@ public class UdemyDownload {
 //			driver.quit();
             System.out.println("Script Execution Finalized!");
         }
-    }
-    
-    /**
-     * The script inside this method avoids redirection and gets the
-     * intended destination url. The intention is to get the url of
-     * link resources without navigating to the link's destination url.
-     */
-    private static void runJsTillCompletion(String jsCode) {
-        wait.until(webDriver -> js.executeScript(jsCode).toString().equals("complete"));
     }
 
     private static String organizeResource(CourseResource courseResource) throws IOException {
